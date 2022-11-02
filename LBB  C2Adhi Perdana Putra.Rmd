@@ -1,0 +1,454 @@
+---
+title: "LBB Bank C2"
+author: "Adhi Perdana"
+date:  "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    theme: yeti
+    highlight: tango
+    df_print: paged
+    toc: true
+    toc_float: true
+    toc_depth: 2
+---
+
+```{r warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Library
+```{r warning=FALSE, message=FALSE }
+library(dplyr)
+library(lubridate)
+library(GGally)
+library(yardstick)
+library(ggplot2)
+library(psych)
+library(rpart)
+library(rattle)
+library(rpart.plot)
+```
+![](bank.jpg)!
+
+# Business Problem
+Bank yang berada di portugal memiliki program marketing yaitu dengan cara telemarketing dengan melakukan telepon kepada calon nasabahnya. Dalam memnjalankan program marketing, perlu juga memperhatikan biaya yang timbul dalam melakukan programnya. Untuk melakukan efisiensi dalam melakukan program tersebut, bank membutuhkan prediksi calon nasabah yang berpotensi untuk memebeli produk tersebut, sehingga perlu di buat model prediksi yang mampu melakukan **classification** untuk  menjawab pertanyaan berikut :
+- Berapa besar jumlah nasabah yang berpotensi/ memiliki peluang yang besar dalam membeli produk?
+- Apakah model dapat secara akurat melakukan prediksi?
+
+Model prediksi menggunakan **decicion tree** dan **Random Forest** dan akan dilakukan perbandingan antara dua model dengan metrics yang terdapat di **confusion matrix** , **ROC** , **AUC**
+
+# Read the data
+
+```{r warning=FALSE, message=FALSE }
+
+bank3 <- read.csv("bank.csv",sep = ";")
+
+str(bank3)
+```
+Dataset ini terdiri dari beberapa variabel yang memiliki deskripsi sebagai berikut :
+
+* `age`  : Umur dari calon nasabah
+* `job` : Pekerjaan dari calon nasabah
+* `marital` : Status pernikahan dari calon nasabah
+* `education` : Pendidikan dari calon nasabah
+* `default`: Apakah calon nasabah pernah gagal bayar?
+* `balance`: Rata - rata saldo tahunan calon nasabah
+* `housing`: kepemilikan KPR dari calon nasabah
+* `loan`: kepemilikan KTA dari calon nasabah
+* `contact`: Tipe komunikasi yang dilakukan marketer bank kepada nasabah
+* `day`: last contact day of the month 
+* `month`: last contact month of year 
+* `duration`: Durasi percakapan marketing dengan calon nasabah
+* `campaign`: Jumlah aktivitas telepon dari marketer bank kepada calon nasabah
+* `pdays`: Interval waktu antara marketing campaign
+* `poutcome`: outcome of the previous marketing campaign 
+
+# **Decicion Tree**
+Decision Tree merupakan *tree-based model* yang cukup sederhana dengan performa yang *robust/powerful* untuk prediksi. Decision Tree menghasilkan visualisasi berupa **pohon keputusan** yang *dapat diinterpretasi* dengan mudah.
+
+Karakter tambahan Decision Tree:
+
+- Variable predictor diasumsikan saling dependent, sehingga dapat mengatasi multicollinearity.
+- Dapat mengatasi nilai predictor numerik yang berupa outlier.
+
+```{r warning=FALSE, message=FALSE}
+bank3 <-bank3 %>% 
+ mutate(job = as.factor(job),
+        marital = as.factor(marital),
+        education = as.factor(education),
+        default = as.factor(default),
+        housing = as.factor(housing),
+        loan = as.factor(loan),
+        contact = as.factor(contact),
+        month = as.factor(month),
+        poutcome = as.factor(poutcome),
+        y = as.factor(y))
+```
+ 
+```{r warning=FALSE, message=FALSE}
+#bank_clean <- bank
+head(bank3)
+```
+```{r}
+bank3 <-bank3 %>% 
+  rename(closing = y)
+```
+
+### NA Check
+```{r warning=FALSE, message=FALSE}
+
+colSums(is.na(bank3))
+```
+## outlier check
+```{r warning=FALSE, message=FALSE}
+hist(bank3$age,col = terrain.colors(10))
+```
+Berdasarkan dari histogram diatas, tidak ada outlier dalam variabel aga dan customer yang berumur 20 -40 merupakan customer dengan jumlah yang terbanyak.
+
+```{r warning=FALSE, message=FALSE}
+str(bank3)
+```
+
+
+```{r warning=FALSE, message=FALSE}
+pairs.panels(bank3[, c(1:8,17)])
+pairs.panels(bank3[, c(9:17)])
+```
+
+Berdasarkan korelasi yang ditunjukkan diatas, maka saya dapat mereduksi variabel yang berkorelasi negatif dan mengambil variabel yang dapat dipergunakan untuk memprediksi target variabel. contohnya adalah varaibel default yang dapat di take out karena tidak ada korelasi dengan variabel closing yang sebagai target variabel.
+> variabel yang di take out : day, month, campaign , poutcome, balance, default
+
+```{r warning=FALSE, message=FALSE}
+bank3_clean <-bank3 %>% 
+  select(-default,-balance,-day,-month,-campaign)
+
+```
+
+```{r}
+bank3_clean <-bank3_clean %>% 
+  select(-poutcome)
+```
+
+```{r}
+head(bank3_clean)
+```
+
+```{r warning=FALSE, message=FALSE}
+pairs.panels(bank3_clean)
+```
+
+
+##Data transformation
+Untuk mempermudah dalam membuat model maka perlu dibuat kategori baru dari beberapa variabel yaitu
+* Age
+* Marital 
+```{r warning=FALSE, message=FALSE}
+bank3_clean$age <- cut(bank3_clean$age, c(1,20,40,60,100))
+
+```
+
+```{r warning=FALSE, message=FALSE}
+bank3_clean$is_divorced <- ifelse(bank3_clean$marital == "divorced", 1, 0)
+```
+
+```{r warning=FALSE, message=FALSE}
+bank3_clean$is_single<-ifelse( bank3_clean$marital == "single", 1, 0)
+```
+
+```{r warning=FALSE, message=FALSE}
+bank3_clean$is_married<-ifelse(bank3_clean$marital == "married", 1, 0)
+```
+
+```{r warning=FALSE, message=FALSE}
+bank3_clean$marital <- NULL
+```
+
+```{r warning=FALSE, message=FALSE}
+str(bank3_clean)
+```
+
+
+## Handling imbalance
+```{r warning=FALSE, message=FALSE}
+table(bank3_clean$closing)
+```
+Ketika saya melakukan cek proporsi pada variabel closing,  variabel tersebut mengalami imbalance dimana hanya 11,5% yang menyatakan bersedia untuk  melakukan closing. Untuk mengatasi imbalance, maka dapat menggunakan create data partition sekaligus membagi data training dan test menjadi proporsi 70 : 30 
+
+```{r warning=FALSE, message=FALSE}
+library(caret)
+```
+
+```{r warning=FALSE, message=FALSE}
+bank3_clean_cross_validation<-createDataPartition(y =bank3_clean$closing,p=0.7,list = FALSE)
+
+```
+creating training data
+```{r warning=FALSE, message=FALSE}
+bank3_train <- bank3_clean[bank3_clean_cross_validation,]
+```
+create testing data
+```{r warning=FALSE, message=FALSE}
+bank3_testing <- bank3_clean[-bank3_clean_cross_validation,]
+```
+
+```{r warning=FALSE, message=FALSE}
+dim(bank3_train)
+dim(bank3_testing)
+```
+
+Setelah melakukan cross validation, perlu di cek apakah permasalahan imbalance sudah dapat diatasi dengan create data partition dari library caret
+
+```{r warning=FALSE, message=FALSE}
+prop.table(table(bank3_train$closing))
+```
+
+berdasarkan proporsi diatas maka belum bisa menyelesaikan permasalahan dari imbalance, kemudian saya mencoba dengan melakuakan upsampling yaitu menambahkan observasi kelas minoritas hingga seimbang dengan kelas mayoritas namun banyak data yang duplikat dengan tidak menghilangkan informasi yang ada
+
+```{r warning=FALSE, message=FALSE}
+bank3_train_balance <- downSample(x = bank3_train %>% select(-closing),
+                         y = bank3_train$closing,
+                         yname = "closing")#nama kolom target
+```
+ 
+```{r warning=FALSE, message=FALSE}
+prop.table(table(bank3_train_balance$closing))
+```
+# Create  Decision Tree Model
+
+```{r warning=FALSE, message=FALSE}
+ bank_tree_final <- rpart(formula = closing ~ ., data = bank3_train_balance, method = "class")
+```
+
+```{r warning=FALSE, message=FALSE}
+fancyRpartPlot(bank_tree_final, sub = NULL)
+```
+
+
+Berdasarkan decision tree diatas dapat didapatkan **insight** sebagai berikut :
+
+- Durasi dalam percakapan dengan calon nasabah  mempengaruhi keputusan calon nasabah dalam membeli produk bank.
+- Jika Durasi kurang dari 221 detik, maka peluang calon nasabah untuk membeli produk hanya 20 % dibandingkan dengan 
+menolak penawaran produk  yang mencapai 80 %
+- jika Durasi dalam percakapan lebih dari 645 detik ( +/_ 10 menit), maka  peluang calon nasabah diprediksi membeli 
+produk bank meningkat menjadi 38 % namun masih ada kemungkinan nasabah untuk menolak penawaran produk bank sebesar 62 %.
+- Jumlah hari setelah penawaran pertama juga mempengaruhi keputusan nasabah dalam menerima penawaran produk bank, n
+asabah yang di telpon kurang dari 81 hari lebih berpeluang dalam menerima penawaran produk bank yaitu 39% dibandingkan  dengan penawaran setelah 81  hari, maka calon nasabah berpeluang dalam menolak penawaran dari bank.
+- Jika nasabah telah mempuyai KPR maka nasabah berpeluang lebih besar dalam menolak produk dari bank yaitu 72 %
+
+# Decicion Tree Model Evaluation
+```{r warning=FALSE, message=FALSE}
+# model fitting
+ bank_tree_final_class <- predict(bank_tree_final, bank3_testing , type = "class")
+bank_tree_final_prob <-predict(bank_tree_final, bank3_testing , type = "prob")
+head(bank_tree_final_prob)
+```
+
+```{r warning=FALSE, message=FALSE}
+# result
+bank_tree_pred_table <- select(bank3_testing, closing) %>%
+  bind_cols(closing_pred = bank_tree_final_class) %>% 
+  bind_cols(closing_noprob = round(bank_tree_final_prob[,1],4)) %>% 
+  bind_cols(closing_yesprob = round(bank_tree_final_prob[,2],4))
+
+head(bank_tree_pred_table)
+```
+
+## Decicion Tree Confusion Matrix
+```{r warning=FALSE, message=FALSE}
+# perfomance evaluaton_table
+confusion_matrix_bank <- bank_tree_pred_table %>% 
+  conf_mat(closing,closing_pred) %>% 
+  autoplot(type = "heatmap")
+
+confusion_matrix_bank
+```
+
+```{r warning=FALSE, message=FALSE}
+bank_tree_pred_table %>%
+  summarise(
+    accuracy = accuracy_vec(closing, closing_pred),
+    sensitivity = sens_vec(closing, closing_pred),
+    specificity = spec_vec(closing, closing_pred),
+    precision = precision_vec(closing, closing_pred)
+  )
+```
+Dalam meelakukan intrepretasi dari hasil confusion matrix diatas, maka perlu ditentukan kelas positif dan negatif 
+yaitu :
+
+* `Positif` : Calon Nasabah membeli produk bank
+* `Negatif`  : Calon nasabah tidak tertarik/ membeli produk bank
+* `False Negative` : Calon Nasabah diprediksi tidak tertarik/ membeli produk bank tapi membeli produk bank
+*  `False Positif`: Calon Nasabah diprediksi membeli produk bank tetapi tidak membeli produk bank
+
+ > Pada dataset ini, divisi marketing yang menggunakan model ini untuk mengetahui seberapa akurat model dalam memprediksi  calon nasabah dalam membeli produk bank (positif), dimana dalam dataset ini calon nasabah yang membeli produk bank,  maka precision dapat digunakan dimana merupakan presentase dari True Positive dengan True dan False Positif. pada tabel prediksi diatas, **peluang calon nasabah masuk dalam klasifikasi  membeli produk bank sebesar  96 %**
+
+> **Namun terdapat peluang sebesar  80 % calon nasabah dapat diklasifikasikan secara akurat tidak membeli produk bank (dilihat dari nilai specificitynya)**. Specificity merupakan metrics yang digunakan dalam melakukan evaluasi model dengan cara melihat seberapa akurat model mengklasifikasikan kelas negatif dimana dalm dataset ini adalah **Calon nasabah tidak tertarik/ membeli produk bank**  dan presentase ini cukup besar  (80%)sehingga bank diharapkan dapat melakukan evaluasi terhadap marketing campaign dan lebih selektif dalam memilih channel marketing yang digunakan.
+
+## ROC AND AUC Evaluation
+
+Evaluasi modeljuga dapat menggunakan ROC yaitu kurva yang menggambarkan proporsi True Positive Rate terhadap False Negatif rate. Kurva ROC yang ideal adalah kurva yang dekat dengan pojok (upper - left) dari kurva yang dapat diinterprestasi dengan TPR
+```{r warning=FALSE, message=FALSE}
+bank_tree_roc <- data.frame(prediction=round(bank_tree_final_prob[,2],4),
+                      Actual=as.numeric(bank_tree_pred_table$closing=="yes"))
+```
+
+```{r warning=FALSE, message=FALSE}
+library(ROCR)
+bank_tree_roc <- ROCR::prediction(bank_tree_roc$prediction, bank_tree_roc$Actual)
+```
+
+```{r warning=FALSE, message=FALSE}
+# ROC curve
+plot(performance(bank_tree_roc, "tpr", "fpr"),
+     main = "ROC")
+
+```
+
+
+Pada plot ROC diatas, kurva mendekati upper left dari TPR sehingga kurva ROC sudah cukup ideal, selanjutnya adalah mengecek AUC (Area Under Curve) yang mengukur seberapa baik model memisahkan kelas positif dan negatif. Nilai AUC berada diantara 0 -1, dan AUC yang mendekati 1 meruapakan indikator yang baik dalam memisahkan kelas positif dan negatif
+
+```{r warning=FALSE, message=FALSE}
+auc_bank <- performance(bank_tree_roc, measure = "auc")
+auc_bank <- auc_bank@y.values[[1]]
+auc_bank
+```
+Pada perhitungan diatas, nilai AUC adalah 0.82, sehingga model yang digunakan cukup baik dalam memisahkan kelas positif dan negatif
+
+```{r}
+bank_tree_metric_evaluation <- bank_tree_pred_table %>%
+  summarise(
+    accuracy = accuracy_vec(closing, closing_pred),
+    sensitivity = sens_vec(closing, closing_pred),
+    specificity = spec_vec(closing, closing_pred),
+    precision = precision_vec(closing, closing_pred)
+  ) %>% 
+  cbind(AUC=auc_bank)
+```
+
+```{r}
+bank_tree_metric_evaluation
+```
+
+
+# **Random Forest Model**
+Random Forest adalah salah satu jenis Ensemble Method yang terdiri dari **banyak Decision Tree**. Masing-masing Decision Tree memiliki karakteristik masing-masing dan tidak saling berhubungan. Random Forest memanfaatkan konsep **Bagging (Bootstrap and Aggregation)** dalam pembuatannya. Berikut adalah prosesnya:
+
+1. **Bootstrap sampling**: Membuat data dengan random sampling (with replacement) dari data keseluruhan dan mengizinkan adanya baris yang terduplikat.
+2. Dibuat 1 decision tree untuk masing-masing data hasil bootstrap. Digunakan parameter `mtry` untuk memilih banyaknya calon prediktor secara random (**Automatic Feature Selection**)
+3. Melakukan prediksi terhadap observasi yang baru untuk setiap Decision Tree.
+4. **Aggregation**: Menghasilkan satu prediksi tunggal untuk memprediksi.
+  + Kasus klasifikasi: majority voting
+  
+## **Create the Model**
+```{r warning=FALSE, message=FALSE}
+set.seed(417)
+ctrl <- trainControl(method="repeatedcv", number=5, repeats=3) # k-fold cross validation
+forest_bank <- train(closing ~ ., data=bank3_train_balance, method="rf", trControl = ctrl)
+
+```
+```{r warning=FALSE, message=FALSE}
+# Summary
+forest_bank
+```
+
+Bila dilihat dari summary model, dilakukan beberapa percobaan `mtry` (jumlah prediktor yang dapat digunakan untuk splitting node (1 prediktor bisa digunakan lebih dari 1 kali)). Di tiap repeats, akan dicoba mtry yang berbeda (pemilihan angka mtry secara random juga). Random forest akan secara otomatis memilih mtry yang menghasilkan metrics evaluasi (dalam kasus ini Precision) terbaik.
+
+Pada kasus ini model yang dipilih adalah dengan mtry = 14, yang memiliki akurasi tertinggi ketika diujikan ke data hasil boostrap sampling (bisa dianggap sebagai *data train* pada pembuatan decision tree pada random forest).
+
+## **Variable Importance**
+
+```{r warning=FALSE, message=FALSE}
+varImp(forest_bank)
+```
+> variabel **duration** memiliki pengaruh yang besar terhadap variable closing sementara variabel jobunemployed memiliki pengaruh yang paling sedikit terhadap variabel closing.
+
+## Forest final model
+```{r warning=FALSE, message=FALSE}
+forest_bank$finalModel
+```
+
+## Forest Evaluation
+```{r warning=FALSE, message=FALSE}
+# model_fitting
+forest_bank_pred <- predict(forest_bank, bank3_testing, type = "raw")
+forest_bank_prob <- predict(forest_bank, bank3_testing, type = "prob")
+```
+
+```{r warning=FALSE, message=FALSE}
+# result
+ forest_bank_table <- select(bank3_testing, closing) %>%
+  bind_cols(closing_pred_forest = forest_bank_pred) %>% 
+  bind_cols(closing_noprob_forest = round(forest_bank_prob[,1],4)) %>% 
+  bind_cols(closing_yesprob_forest = round(forest_bank_prob[,2],4))
+
+head(forest_bank_table)
+```
+
+### Confusion Matrix
+```{r warning=FALSE, message=FALSE}
+# perfomance evaluaton_table
+forest_bank_table %>% 
+  conf_mat(closing,closing_pred_forest) %>% 
+  autoplot(type = "heatmap")
+```
+
+```{r warning=FALSE, message=FALSE}
+forest_bank_table %>%
+  summarise(
+    accuracy = accuracy_vec(closing, closing_pred_forest),
+    sensitivity = sens_vec(closing, closing_pred_forest),
+    specificity = spec_vec(closing, closing_pred_forest),
+    precision = precision_vec(closing, closing_pred_forest)
+  )
+```
+
+```{r warning=FALSE, message=FALSE}
+bank_table_forest_roc <-data.frame(prediction=round(forest_bank_prob[,2],4),
+                      Actual=as.numeric(forest_bank_table$closing=="yes"))
+head(bank_table_forest_roc)
+```
+### ROC Evaluation
+```{r}
+bank_forest_roc <-ROCR::prediction(bank_table_forest_roc$prediction, bank_table_forest_roc$Actual)
+
+```
+
+```{r}
+#ROC CURVE
+plot(performance(bank_forest_roc, "tpr", "fpr"),
+     main = "ROC")
+```
+```{r}
+# AUC
+auc_ROCR_forest_bank <- performance(bank_forest_roc, measure = "auc")
+auc_ROCR_forest_bank <- auc_ROCR_forest_bank@y.values[[1]]
+auc_ROCR_forest_bank
+```
+
+```{r}
+forest_bank_metric_evaluation <-forest_bank_table %>%
+  summarise(
+    accuracy = accuracy_vec(closing, closing_pred_forest),
+    sensitivity = sens_vec(closing, closing_pred_forest),
+    specificity = spec_vec(closing, closing_pred_forest),
+    precision = precision_vec(closing, closing_pred_forest)
+  ) %>% 
+  cbind(AUC =auc_ROCR_forest_bank)
+```
+
+```{r}
+forest_bank_metric_evaluation
+```
+>Berdasarkan evaluasi model random forest diatas, model random forest dapat meningkatkan metric precicion menjadi 97 % lebih besar daripada model decicion tree, sementara mertric AUC yang menjadi indikator model dalam memisahkan kelas positif dan negatif juga meningkat menjadi 85 %. Dengan demikian, model Random forest dapat dipilih menjadi model yang paling baik dalam melakukan klasifikasi pada data set ini
+
+# Conclucion
+```{r}
+best_model_evaluation <-rbind("Decicion tree model"= bank_tree_metric_evaluation,"Random forest" =forest_bank_metric_evaluation)
+```
+
+```{r}
+best_model_evaluation
+```
+
+1. Berdasarkan evaluasi model random forest diatas, model random forest dapat meningkatkan metric precicion menjadi 97 % lebih besar daripada model decicion tree, sementara mertric AUC yang menjadi indikator model dalam memisahkan kelas positif dan negatif juga meningkat menjadi 85 %. Dengan demikian, model Random forest dapat dipilih menjadi model yang paling baik dalam melakukan prediksi calon nasabah membeli produk yang ditawarkan
+
+2. Durasi dalam menelpon calon nasabah menjadi variabel yang mempengaruhi apakah calon nasabah membeli atau menolak penawaran dari produk. Durasi yang singkat dalam percakapan dengan calon nasabah memiliki peluang besar untuk menolak produk dari bank karena nasabah membutuhkan informasi yang lengkap dalamm memutuskan apakah membeli atau tidak produk.
